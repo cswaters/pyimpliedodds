@@ -128,13 +128,11 @@ def _or_solve_func(c: float, probs: np.ndarray, margin: float) -> float:
 
 
 @njit(fastmath=True)
-def _power_solve_func(n: float, probs: np.ndarray, margin: float) -> float:
-    """Power method solver function."""
-    new_probs = np.power(probs, n)
-    prob_sum = np.sum(new_probs)
-    if prob_sum > 0:
-        new_probs = new_probs / prob_sum
-    return prob_sum - (1 + margin)
+def _power_solve_func(k: float, probs: np.ndarray, margin: float) -> float:
+    """Power method solver function - find k such that sum(p_i^k) = 1 + margin."""
+    powered_probs = np.power(probs, k)
+    prob_sum = np.sum(powered_probs)
+    return prob_sum - (1.0 + margin)
 
 
 @njit(fastmath=True)

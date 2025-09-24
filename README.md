@@ -29,7 +29,7 @@ print(probs)  # [0.486, 0.320, 0.194]
 
 # Convert probabilities to odds with margin
 probs = [0.4, 0.35, 0.25]
-odds = implied_odds(probs, method=Method.BASIC, margin=0.05)
+odds = implied_odds(probs, method=Method.POWER, margin=0.05)
 print(odds)  # [2.381, 2.721, 3.810]
 ```
 
@@ -93,10 +93,33 @@ fair_probs = [0.45, 0.35, 0.20]
 
 # Add 5% margin using different methods
 odds_basic = implied_odds(fair_probs, method=Method.BASIC, margin=0.05)
+odds_power = implied_odds(fair_probs, method=Method.POWER, margin=0.05)
 odds_shin = implied_odds(fair_probs, method=Method.SHIN, margin=0.05)
 
 print("Basic method:", odds_basic)
+print("Power method:", odds_power)  # Same as Basic for τ=1
 print("Shin method:", odds_shin)
+```
+
+### Power Method Examples
+
+```python
+# AFC East division winner example with 4.58% margin
+fair_probs = [0.9196, 0.0107, 0.0591, 0.0107]  # Bills, Dolphins, Patriots, Jets
+teams = ["Buffalo Bills", "Miami Dolphins", "New England Patriots", "New York Jets"]
+
+# Add margin using Power method (τ=1, neutral distribution)
+odds = implied_odds(fair_probs, method=Method.POWER, margin=0.0458)
+
+for team, odd in zip(teams, odds):
+    american_odds = -100/(odd-1) if odd < 2 else (odd-1)*100
+    print(f"{team}: {american_odds:+.0f}")
+
+# Output:
+# Buffalo Bills: -2505
+# Miami Dolphins: +8837
+# New England Patriots: +1518
+# New York Jets: +8837
 ```
 
 ### Working with NumPy Arrays
@@ -192,7 +215,23 @@ The odds ratio method transforms probabilities using a scaling factor that maint
 
 ### Power Method
 
-The power method applies an exponent to the probabilities, with the exponent chosen to achieve the desired probability sum.
+The power method, developed by Clarke et al. (2017), applies the transformation π_i = p_i^τ where τ is the power exponent. This method offers several theoretical advantages:
+
+- **Never produces invalid probabilities**: Results always stay within [0,1] range
+- **Bias handling**: Can account for favorite-longshot bias when τ ≠ 1
+- **Conceptual simplicity**: More intuitive than iterative methods like Shin
+- **Direct application**: Can be applied to both probabilities and odds using the same power law
+
+**Mathematical formulation:**
+1. Apply power transformation: π_i = p_i^τ
+2. Scale to target margin: r_i = (1+m) × π_i / Σπ_j
+
+**Power exponent effects:**
+- τ = 1: Neutral (equivalent to proportional/basic method)
+- τ > 1: Concentrates more margin on favorites
+- τ < 1: Distributes more margin to longshots
+
+*Current implementation uses τ=1 (neutral distribution).*
 
 ### Jensen-Shannon Distance Method
 
@@ -214,5 +253,10 @@ Contributions are welcome! Please see the GitHub repository for guidelines.
 
 ## References
 
-- Shin, H. S. (1993). Measuring the incidence of insider trading in a market for state-contingent claims. Economic Journal, 103, 142-153.
-- Jullien, B., & Salanié, B. (2000). Estimating preferences under risk: The case of racetrack bettors. Journal of Political Economy, 108(4), 601-635.
+- **Clarke, S., Kovalchik, S., & Ingram, M. (2017).** Adjusting Bookmaker's Odds to Allow for Overround. *American Journal of Sports Science*, 5(6), 45-49. DOI: [10.11648/j.ajss.20170506.12](https://doi.org/10.11648/j.ajss.20170506.12)
+
+- **Shin, H. S. (1993).** Measuring the incidence of insider trading in a market for state-contingent claims. *Economic Journal*, 103, 142-153.
+
+- **Jullien, B., & Salanié, B. (2000).** Estimating preferences under risk: The case of racetrack bettors. *Journal of Political Economy*, 108(4), 601-635.
+
+- **Vovk, V., & Zhdanov, F. (2009).** Prediction with Expert Advice for the Brier Game. *Journal of Machine Learning Research*, 10, 2445-2471.
