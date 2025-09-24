@@ -21,13 +21,6 @@ def add_power_margin_example():
     # Target margin (4.58%)
     target_margin = 0.0458
 
-    # Debug: test what k value we need
-    print("Debug: Testing manual power calculation...")
-    test_k = 0.8  # Test value
-    manual_powered = [p**test_k for p in fair_probs]
-    manual_sum = sum(manual_powered)
-    print(f"With k={test_k}: sum = {manual_sum:.6f}, target = {1+target_margin:.6f}")
-
     # Add margin using POWER method
     odds_with_margin = implied_odds(
         probabilities=fair_probs,
