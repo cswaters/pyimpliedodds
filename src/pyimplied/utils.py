@@ -108,16 +108,29 @@ def _eval_func(x: float, params: np.ndarray, method: int) -> float:
 
 @njit(fastmath=True)
 def _shin_solve_func(z: float, probs: np.ndarray, margin: float, gross_margin: float) -> float:
-    """Shin method solver function."""
-    sqrt_probs = np.sqrt(probs)
-    numerator = sqrt_probs
-    denominator = z + sqrt_probs
-    new_probs = numerator / denominator
+    """
+    Shin (1993) method solver function.
+
+    Standard formula: π_i = (√(z² + 4(1-z)·b_i) - z) / (2(1-z))
+    where b_i is the implied probability and z is the insider trading parameter.
+    """
+    if z >= 1.0:
+        return float('inf')
+
+    total = 0.0
+    two_one_minus_z = 2.0 * (1.0 - z)
+
+    for i in range(len(probs)):
+        discriminant = z * z + 4.0 * (1.0 - z) * probs[i]
+        if discriminant < 0:
+            return float('inf')
+        pi = (np.sqrt(discriminant) - z) / two_one_minus_z
+        total += pi
 
     if gross_margin > 0:
-        new_probs = new_probs * (1 + gross_margin) / np.sum(new_probs)
+        total = total * (1 + gross_margin)
 
-    return np.sum(new_probs) - (1 + margin)
+    return total - (1.0 + margin)
 
 
 @njit(fastmath=True)

@@ -63,7 +63,15 @@ def _shin_probabilities(
     margin: float = 0.0,
     gross_margin: float = 0.0
 ) -> np.ndarray:
-    """Shin's method using optimization."""
+    """
+    Shin (1993) method for removing bookmaker margin.
+
+    Based on: Shin, H.S. (1993). "Measuring the Incidence of Insider Trading
+    in a Market for State-Contingent Claims"
+
+    Formula: π_i = (√(z² + 4(1-z)·b_i) - z) / (2(1-z))
+    where b_i is the implied probability and z is the insider trading parameter.
+    """
     raw_probs = 1.0 / odds
     raw_probs = raw_probs.astype(np.float64)
 
@@ -73,15 +81,19 @@ def _shin_probabilities(
     # Prepare parameters for solver
     params = np.concatenate([raw_probs, np.array([margin, gross_margin])])
 
-    # Solve for z parameter
-    z = solve_root_brent(params, 0, 0.0, 100.0)
+    # Solve for z parameter (insider trading proportion)
+    z = solve_root_brent(params, 0, 0.0001, 0.5)
 
     if np.isnan(z):
         return _basic_probabilities(odds)
 
-    # Calculate final probabilities
-    sqrt_probs = np.sqrt(raw_probs)
-    new_probs = sqrt_probs / (z + sqrt_probs)
+    # Calculate final probabilities using correct Shin formula
+    two_one_minus_z = 2.0 * (1.0 - z)
+    new_probs = np.zeros_like(raw_probs)
+
+    for i in range(len(raw_probs)):
+        discriminant = z * z + 4.0 * (1.0 - z) * raw_probs[i]
+        new_probs[i] = (np.sqrt(discriminant) - z) / two_one_minus_z
 
     if gross_margin > 0:
         new_probs = new_probs * (1 + gross_margin) / np.sum(new_probs)
