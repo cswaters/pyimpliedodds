@@ -116,33 +116,19 @@ def _or_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
     return 1.0 / new_probs
 
 
-@njit(fastmath=True)
 def _power_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
     """
-    Power method for adding margin to probabilities.
+    Power method for adding margin to probabilities - TRUE Clarke et al. implementation.
 
     Based on Clarke et al. (2017): "Adjusting Bookmaker's Odds to Allow for Overround"
     American Journal of Sports Science, Vol. 5, No. 6, pp. 45-49.
     DOI: 10.11648/j.ajss.20170506.12
 
-    The power method applies the transformation:
-        π_i = p_i^τ  (where τ is the power exponent)
-
-    Then scales to achieve target margin:
-        r_i = (1+m) * w_i  where w_i = π_i / Σπ_j
-
-    For τ=1 (neutral/proportional distribution):
-        The method reduces to: r_i = (1+m) * p_i
-        This is equivalent to the multiplicative/basic method.
+    The power method finds optimal τ such that sum(p_i^τ) = 1 + margin,
+    then applies: π_i = p_i^τ
 
     For τ > 1: Concentrates more margin on favorites
     For τ < 1: Distributes more margin to longshots
-
-    Advantages over other methods:
-    - Never produces probabilities outside [0,1] range
-    - Can be applied directly to prices following same power law
-    - Accounts for favorite-longshot bias when τ ≠ 1
-    - Conceptually simpler than iterative methods like Shin
 
     Args:
         probs: Array of fair probabilities that sum to 1.0
@@ -150,18 +136,26 @@ def _power_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
 
     Returns:
         Array of decimal odds with added margin
-
-    Note:
-        Current implementation uses τ=1 (neutral). Future versions
-        may expose τ as a parameter for bias adjustment.
     """
     if margin <= 0:
         return 1.0 / probs
 
-    # For τ=1 (neutral), the power method is identical to basic method
-    # r_i = (1+m) * p_i^1 = (1+m) * p_i
-    scaled_probs = probs * (1.0 + margin)
-    return 1.0 / scaled_probs
+    probs_64 = probs.astype(np.float64)
+
+    # Prepare parameters for solver
+    params = np.concatenate([probs_64, np.array([margin])])
+
+    # Solve for τ (tau) parameter such that sum(p_i^τ) = 1 + margin
+    tau = solve_root_brent(params, 2, 0.1, 3.0)
+
+    if np.isnan(tau):
+        # Fallback to basic method
+        return _basic_odds(probs, margin)
+
+    # Apply true Clarke power transformation: π_i = p_i^τ
+    powered_probs = np.power(probs_64, tau)
+
+    return 1.0 / powered_probs
 
 
 def implied_odds(

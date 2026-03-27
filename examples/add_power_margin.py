@@ -1,7 +1,7 @@
 """Example: Adding margin to devigged probabilities using the POWER method."""
 
 import numpy as np
-from pyimplied import implied_odds, Method
+from pyimplied import implied_odds, implied_probabilities, Method
 
 
 def add_power_margin_example():
