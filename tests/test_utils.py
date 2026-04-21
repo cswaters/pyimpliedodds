@@ -50,26 +50,30 @@ class TestRootSolver:
         assert root > 0
 
     def test_jsd_solver(self):
-        """Test JSD method solver."""
-        probs = np.array([0.4, 0.3, 0.3])
-        margin = 0.05
+        """JSD outer solve finds the shared binomial-JSD distance d*.
+
+        Under the corrected formulation each π_i ≤ b_i, so Σπ_i ≤ Σb_i;
+        use a properly vigged book (Σb > 1) and target sum 1.
+        """
+        probs = np.array([0.5, 0.3, 0.3])  # sum = 1.1 → vigged
+        margin = 0.0
 
         params = np.concatenate([probs, np.array([margin])])
-        root = solve_root_brent(params, 3, 0.0, 1.0)
+        root = solve_root_brent(params, 3, 1e-9, 0.8)
 
         assert np.isfinite(root)
         assert 0 <= root <= 1
 
     def test_no_root_case(self):
-        """Test case where no root exists."""
-        # Create parameters that don't have a root in the given interval
+        """Solver must report NaN when the bracket doesn't span a root."""
+        # OR solver: target sum is 1 + margin = 4, but with 3 outcomes the
+        # max achievable sum is N = 3 — no valid c exists.
         probs = np.array([0.4, 0.3, 0.3])
-        margin = -0.5  # Negative margin might not have a solution
+        margin = 3.0
 
         params = np.concatenate([probs, np.array([margin])])
         root = solve_root_brent(params, 1, 0.001, 100.0)
 
-        # Should return NaN when no root found
         assert np.isnan(root)
 
 

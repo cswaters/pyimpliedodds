@@ -19,7 +19,7 @@ def basic_examples():
 
     # Example 2: Compare different methods
     print("=== Method Comparison ===")
-    methods = [Method.BASIC, Method.SHIN, Method.OR, Method.POWER]
+    methods = [Method.BASIC, Method.SHIN, Method.OR, Method.POWER, Method.JSD, Method.PROBIT]
 
     for method in methods:
         probs = implied_probabilities(odds, method=method)

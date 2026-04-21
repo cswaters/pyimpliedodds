@@ -69,27 +69,29 @@ def _shin_odds(
     margin: float = 0.0,
     gross_margin: float = 0.0
 ) -> np.ndarray:
-    """Shin's method for converting probabilities to odds."""
+    """Shin's method for converting probabilities to odds.
+
+    Forward Shin with parameter z ≥ 0:
+        b_i = √π_i / (z + √π_i)
+    Solve z so Σ b_i = 1 + margin, then return 1 / b_i.
+    """
     if margin <= 0 and gross_margin <= 0:
         return 1.0 / probs
 
     probs_64 = probs.astype(np.float64)
 
-    # Prepare parameters for solver
-    params = np.concatenate([probs_64, np.array([margin, gross_margin])])
-
-    # Solve for z parameter (method 0 for Shin)
-    z = solve_root_brent(params, 0, 0.0, 100.0)
+    # Forward Shin solver (method id 5) — distinct from the devig solver.
+    params = np.concatenate([probs_64, np.array([margin])])
+    z = solve_root_brent(params, 5, 0.0, 100.0)
 
     if np.isnan(z):
         return _basic_odds(probs, margin)
 
-    # Apply Shin transformation
     sqrt_probs = np.sqrt(probs_64)
     new_probs = sqrt_probs / (z + sqrt_probs)
 
     if gross_margin > 0:
-        new_probs = new_probs * (1 + gross_margin) / np.sum(new_probs)
+        new_probs = new_probs * (1.0 + gross_margin) / np.sum(new_probs)
 
     return 1.0 / new_probs
 

@@ -78,6 +78,28 @@ class TestBasicProbabilities:
         assert len(probs) == 3
         assert all(p > 0 for p in probs)
 
+    def test_probit_method(self):
+        odds = [2.0, 3.0, 6.0]
+        probs = implied_probabilities(odds, method=Method.PROBIT)
+
+        assert abs(np.sum(probs) - 1.0) < 1e-10
+        assert len(probs) == 3
+        assert all(p > 0 for p in probs)
+
+    def test_probit_symmetric_juice(self):
+        # -110/-110 -> 50/50 no-vig per the blog worked example.
+        odds = [1.0 + 100 / 110, 1.0 + 100 / 110]
+        probs = implied_probabilities(odds, method=Method.PROBIT)
+        np.testing.assert_array_almost_equal(probs, [0.5, 0.5], decimal=10)
+
+    def test_probit_heavy_favorite(self):
+        # -50000/+4000 -> ~99.2% / ~0.8% per the blog worked example.
+        odds = [1.0 + 100 / 50000, 1.0 + 4000 / 100]
+        probs = implied_probabilities(odds, method=Method.PROBIT)
+        assert abs(np.sum(probs) - 1.0) < 1e-10
+        assert 0.990 < probs[0] < 0.995
+        assert 0.005 < probs[1] < 0.010
+
 
 class TestInputValidation:
     """Test input validation."""
@@ -137,7 +159,7 @@ class TestStringMethods:
         odds = [2.0, 3.0, 6.0]
 
         # Test all string method names
-        methods = ["basic", "wpo", "bb", "additive", "shin", "or", "power", "jsd"]
+        methods = ["basic", "wpo", "bb", "additive", "shin", "or", "power", "jsd", "probit"]
 
         for method in methods:
             probs = implied_probabilities(odds, method=method)

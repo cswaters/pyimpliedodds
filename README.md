@@ -5,7 +5,7 @@ A high-performance Python library for converting between bookmaker odds and prob
 ## Features
 
 - **Fast**: Optimized with Numba JIT compilation for high-performance numerical operations
-- **Multiple Methods**: 8 different conversion methods including Shin's method, odds ratio, power method, and more
+- **Multiple Methods**: 9 different conversion methods including Shin's method, odds ratio, power method, probit, and more
 - **Comprehensive**: Handles both odds-to-probabilities and probabilities-to-odds conversions
 - **Well-Tested**: Extensive test suite with benchmarks
 - **Type Safe**: Full type hints for better development experience
@@ -45,6 +45,7 @@ print(odds)  # [2.381, 2.721, 3.810]
 - **OR**: Odds ratio method
 - **POWER**: Power method with exponent optimization
 - **JSD**: Jensen-Shannon distance method
+- **PROBIT**: Shift on the inverse-normal-CDF scale
 
 ### For Odds Conversion
 
@@ -237,6 +238,20 @@ The power method, developed by Clarke et al. (2017), applies the transformation 
 
 This method finds the optimal mixture between the bookmaker's probabilities and a uniform distribution that minimizes the Jensen-Shannon divergence.
 
+### Probit Method
+
+The probit method removes the vig on the inverse-normal-CDF scale rather than in raw probability space. Each raw implied probability is mapped to a z-score via Φ⁻¹, a single shift `c` is solved so that the shifted z-scores map back (through Φ) to probabilities summing to 1, and those shifted values are the devigged probabilities.
+
+**Mathematical formulation:**
+1. Compute raw probabilities `p_i = 1 / odds_i`
+2. Map to z-scores on the probit scale: `z_i = Φ⁻¹(p_i)`
+3. Solve for `c` such that `Σ Φ(z_i − c) = 1 + margin`
+4. Return `π_i = Φ(z_i − c)`
+
+Worked example from the reference post: a -110 / -110 market maps to +0.06 / +0.06 on the probit scale; subtracting 0.06 from each side yields 0.00 / 0.00 (probit) = 50% / 50% (probability).
+
+See ["How Wide Is the Goalie? Quantifying Vig in Nonlinear Space" — Plus EV Analytics, June 2025](https://plusevanalytics.wordpress.com/2025/06/09/how-wide-is-the-goalie-quantifying-vig-in-nonlinear-space/) for the motivating write-up and additional worked examples.
+
 ## Requirements
 
 - Python ≥ 3.8
@@ -260,3 +275,5 @@ Contributions are welcome! Please see the GitHub repository for guidelines.
 - **Jullien, B., & Salanié, B. (2000).** Estimating preferences under risk: The case of racetrack bettors. *Journal of Political Economy*, 108(4), 601-635.
 
 - **Vovk, V., & Zhdanov, F. (2009).** Prediction with Expert Advice for the Brier Game. *Journal of Machine Learning Research*, 10, 2445-2471.
+
+- **Plus EV Analytics (2025).** [How Wide Is the Goalie? Quantifying Vig in Nonlinear Space](https://plusevanalytics.wordpress.com/2025/06/09/how-wide-is-the-goalie-quantifying-vig-in-nonlinear-space/).

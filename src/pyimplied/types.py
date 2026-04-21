@@ -17,6 +17,7 @@ class Method(str, Enum):
     POWER = "power"
     ADDITIVE = "additive"
     JSD = "jsd"  # Jensen-Shannon distance
+    PROBIT = "probit"  # Probit (inverse normal CDF) shift
 
 
 # Type aliases

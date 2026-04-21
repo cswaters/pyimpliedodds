@@ -5,7 +5,14 @@ from numba import njit
 from typing import Union, List, Optional
 
 from .types import Method, MethodType, Odds, Probabilities
-from .utils import solve_root_brent, validate_odds_fast, js_divergence_fast
+from .utils import (
+    solve_root_brent,
+    validate_odds_fast,
+    js_divergence_fast,
+    probit_transform,
+    probit_inverse_shift,
+    _jsd_inverse,
+)
 
 
 @njit(fastmath=True)
@@ -63,40 +70,32 @@ def _shin_probabilities(
     margin: float = 0.0,
     gross_margin: float = 0.0
 ) -> np.ndarray:
-    """
-    Shin (1993) method for removing bookmaker margin.
+    """Shin (1993) method for removing bookmaker margin.
 
-    Based on: Shin, H.S. (1993). "Measuring the Incidence of Insider Trading
-    in a Market for State-Contingent Claims"
-
-    Formula: π_i = (√(z² + 4(1-z)·b_i) - z) / (2(1-z))
-    where b_i is the implied probability and z is the insider trading parameter.
+    π_i = (√(z² + 4(1-z)·b_i²/Σb) − z) / (2(1-z))
+    where b_i = 1/odds_i and z ∈ [0, 1) is the insider-trading parameter.
     """
     raw_probs = 1.0 / odds
     raw_probs = raw_probs.astype(np.float64)
+    total_raw = np.sum(raw_probs)
 
-    if np.sum(raw_probs) <= 1.0 + margin:
-        return raw_probs / np.sum(raw_probs)
+    if total_raw <= 1.0 + margin:
+        return raw_probs / total_raw
 
-    # Prepare parameters for solver
     params = np.concatenate([raw_probs, np.array([margin, gross_margin])])
-
-    # Solve for z parameter (insider trading proportion)
-    z = solve_root_brent(params, 0, 0.0001, 0.5)
+    z = solve_root_brent(params, 0, 1e-9, 0.4)
 
     if np.isnan(z):
         return _basic_probabilities(odds)
 
-    # Calculate final probabilities using correct Shin formula
     two_one_minus_z = 2.0 * (1.0 - z)
-    new_probs = np.zeros_like(raw_probs)
-
+    new_probs = np.empty_like(raw_probs)
     for i in range(len(raw_probs)):
-        discriminant = z * z + 4.0 * (1.0 - z) * raw_probs[i]
+        discriminant = z * z + 4.0 * (1.0 - z) * raw_probs[i] * raw_probs[i] / total_raw
         new_probs[i] = (np.sqrt(discriminant) - z) / two_one_minus_z
 
     if gross_margin > 0:
-        new_probs = new_probs * (1 + gross_margin) / np.sum(new_probs)
+        new_probs = new_probs * (1.0 + gross_margin) / np.sum(new_probs)
 
     return new_probs
 
@@ -145,27 +144,58 @@ def _power_probabilities(odds: np.ndarray, margin: float = 0.0) -> np.ndarray:
     return new_probs / np.sum(new_probs)
 
 
-def _jsd_probabilities(odds: np.ndarray, margin: float = 0.0) -> np.ndarray:
-    """Jensen-Shannon distance method."""
+def _probit_probabilities(odds: np.ndarray, margin: float = 0.0) -> np.ndarray:
+    """Probit method: subtract a constant on the inverse-normal-CDF scale.
+
+    Raw probabilities are mapped to z-scores via Φ⁻¹; a single shift c is
+    solved so that Σ Φ(z_i - c) = 1 + margin, then the shifted z-scores are
+    mapped back through Φ.
+    """
     raw_probs = 1.0 / odds
     raw_probs = raw_probs.astype(np.float64)
 
     if np.sum(raw_probs) <= 1.0 + margin:
         return raw_probs / np.sum(raw_probs)
 
-    # Prepare parameters for solver
-    params = np.concatenate([raw_probs, np.array([margin])])
+    z_scores = probit_transform(raw_probs)
+    params = np.concatenate([z_scores, np.array([margin])])
 
-    # Solve for lambda parameter
-    lam = solve_root_brent(params, 3, 0.0, 1.0)
+    c = solve_root_brent(params, 4, -10.0, 20.0)
 
-    if np.isnan(lam):
+    if np.isnan(c):
         return _basic_probabilities(odds)
 
-    # Calculate final probabilities
-    uniform = np.ones_like(raw_probs) / len(raw_probs)
-    mixed = lam * raw_probs + (1 - lam) * uniform
-    return mixed / np.sum(mixed)
+    return probit_inverse_shift(z_scores, c)
+
+
+def _jsd_probabilities(odds: np.ndarray, margin: float = 0.0) -> np.ndarray:
+    """Jensen-Shannon distance method (per Jonas Lindström's `implied` R package).
+
+    Each devigged π_i lies below its raw b_i = 1/odds_i, such that the
+    binomial Jensen-Shannon distance between (π_i, 1 − π_i) and
+    (b_i, 1 − b_i) equals a single scalar d* shared across outcomes.
+    d* is chosen so Σ π_i = 1 + margin.
+    """
+    raw_probs = 1.0 / odds
+    raw_probs = raw_probs.astype(np.float64)
+
+    if np.sum(raw_probs) <= 1.0 + margin:
+        return raw_probs / np.sum(raw_probs)
+
+    params = np.concatenate([raw_probs, np.array([margin])])
+    d = solve_root_brent(params, 3, 1e-9, 0.8)
+
+    if np.isnan(d):
+        return _basic_probabilities(odds)
+
+    new_probs = np.empty_like(raw_probs)
+    for i in range(len(raw_probs)):
+        new_probs[i] = _jsd_inverse(d, raw_probs[i])
+
+    if not np.all(np.isfinite(new_probs)):
+        return _basic_probabilities(odds)
+
+    return new_probs
 
 
 def implied_probabilities(
@@ -223,6 +253,8 @@ def implied_probabilities(
         probs = _power_probabilities(odds_array, margin)
     elif method == Method.JSD:
         probs = _jsd_probabilities(odds_array, margin)
+    elif method == Method.PROBIT:
+        probs = _probit_probabilities(odds_array, margin)
     else:
         raise ValueError(f"Unknown method: {method}")
 
