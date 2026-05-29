@@ -82,8 +82,12 @@ def _shin_probabilities(
     if total_raw <= 1.0 + margin:
         return raw_probs / total_raw
 
+    # z ∈ [0, 1) is the full valid range for Shin's insider-trading parameter;
+    # lopsided / high-margin books legitimately need z > 0.4. The solver guards
+    # z ≥ 1 internally, so bracket up to 1 - 1e-9 (was 0.4, which silently fell
+    # back to _basic and broke the round trip with the forward map).
     params = np.concatenate([raw_probs, np.array([margin, gross_margin])])
-    z = solve_root_brent(params, 0, 1e-9, 0.4)
+    z = solve_root_brent(params, 0, 1e-9, 1.0 - 1e-9)
 
     if np.isnan(z):
         return _basic_probabilities(odds)

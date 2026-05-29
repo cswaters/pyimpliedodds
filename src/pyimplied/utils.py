@@ -113,17 +113,44 @@ def _eval_func(x: float, params: np.ndarray, method: int) -> float:
     elif method == 5:  # Shin forward (odds direction)
         probs, margin = params[:-1], params[-1]
         return _shin_forward_solve_func(x, probs, margin)
+    elif method == 6:  # WPO forward (odds direction)
+        probs, margin = params[:-1], params[-1]
+        return _wpo_forward_solve_func(x, probs, margin)
+    elif method == 7:  # JSD forward (odds direction)
+        probs, margin = params[:-1], params[-1]
+        return _jsd_forward_solve_func(x, probs, margin)
     return 0.0
 
 
 @njit(fastmath=True)
-def _shin_forward_solve_func(z: float, probs: np.ndarray, margin: float) -> float:
-    # Forward Shin (odds direction): b_i = √p_i / (z + √p_i); find z so Σb_i = 1 + margin.
+def _wpo_forward_solve_func(T: float, probs: np.ndarray, margin: float) -> float:
+    # WPO forward = exact inverse of the devig WPO map. Devig solves
+    #   π_i = 1/O_i - margin · O_i / Σ O_j.
+    # Fixing T = Σ O_j makes each O_i a quadratic root:
+    #   O_i(T) = (-π_i + √(π_i² + 4·margin/T)) / (2·margin/T).
+    # The scalar self-consistency root is Σ O_i(T) = T.
+    if T <= 0.0:
+        return 1e30
+    k = margin / T
+    two_k = 2.0 * k
     total = 0.0
     for i in range(len(probs)):
-        sp = math.sqrt(probs[i])
-        total += sp / (z + sp)
-    return total - (1.0 + margin)
+        total += (-probs[i] + math.sqrt(probs[i] * probs[i] + 4.0 * k)) / two_k
+    return total - T
+
+
+@njit(fastmath=True)
+def _shin_forward_solve_func(z: float, probs: np.ndarray, margin: float) -> float:
+    # Forward Shin (odds direction) = exact inverse of the devig formula in
+    # _shin_solve_func: b_i = √(S · π_i · ((1-z)·π_i + z)), S = 1 + margin.
+    # Find z ∈ [0, 1) so Σ b_i = S.
+    if z >= 1.0 or z < 0.0:
+        return 1e30
+    S = 1.0 + margin
+    total = 0.0
+    for i in range(len(probs)):
+        total += math.sqrt(S * probs[i] * ((1.0 - z) * probs[i] + z))
+    return total - S
 
 
 @njit(fastmath=True)
@@ -179,6 +206,61 @@ def _jsd_solve_func(d: float, probs: np.ndarray, margin: float) -> float:
             return 1e30
         total += pi_i
     return total - (1.0 + margin)
+
+
+@njit(fastmath=True)
+def _jsd_forward_solve_func(d: float, probs: np.ndarray, margin: float) -> float:
+    # Outer JSD root for the odds direction: pick distance d so Σ b_i = 1 + margin,
+    # where each b_i is the inverse of binom_jsd(·, π_i) on [π_i, 1] (book above fair).
+    # Exact inverse of _jsd_solve_func / _jsd_inverse, which search below b_i.
+    total = 0.0
+    for i in range(len(probs)):
+        b_i = _jsd_forward_inverse(d, probs[i])
+        if b_i != b_i:  # NaN propagation
+            return 1e30
+        total += b_i
+    return total - (1.0 + margin)
+
+
+@njit(fastmath=True)
+def _jsd_forward_inverse(d: float, pi: float) -> float:
+    # Inner Brent: find b ∈ [pi, 1-eps] with _binom_jsd(pi, b) = d. The book
+    # probability lies above the fair probability, so we search above pi —
+    # the mirror of _jsd_inverse, which searches below.
+    eps = 1e-10
+    if d <= 0.0:
+        return pi
+
+    lo = pi
+    hi = 1.0 - eps
+    if hi <= lo:
+        return pi
+
+    f_lo = -d  # _binom_jsd(pi, pi) = 0
+    f_hi = _binom_jsd(pi, hi) - d
+    if f_hi < 0.0:
+        # d exceeds the maximum JSD reachable on [pi, 1]; saturate at hi so the
+        # outer solver sees a clean "this d is too big" signal.
+        return hi
+    if f_lo * f_hi > 0.0:
+        return np.nan
+
+    a = lo
+    fa = f_lo
+    c = hi
+    fc = f_hi
+    for _ in range(80):
+        if abs(c - a) < 1e-12:
+            return 0.5 * (a + c)
+        mid = 0.5 * (a + c)
+        fm = _binom_jsd(pi, mid) - d
+        if fa * fm < 0.0:
+            c = mid
+            fc = fm
+        else:
+            a = mid
+            fa = fm
+    return 0.5 * (a + c)
 
 
 @njit(fastmath=True)

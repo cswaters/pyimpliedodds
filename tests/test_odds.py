@@ -104,8 +104,8 @@ class TestInputValidation:
             implied_odds([0.5])
 
     def test_unknown_method(self):
-        with pytest.raises(ValueError, match="not supported"):
-            implied_odds([0.5, 0.5], method=Method.JSD)
+        with pytest.raises(ValueError, match="Unknown method"):
+            implied_odds([0.5, 0.5], method="not_a_real_method")
 
 
 class TestEdgeCases:

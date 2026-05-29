@@ -5,7 +5,13 @@ from numba import njit
 from typing import Union, List
 
 from .types import Method, MethodType, Odds, Probabilities
-from .utils import solve_root_brent, validate_probabilities_fast
+from .utils import (
+    solve_root_brent,
+    validate_probabilities_fast,
+    probit_transform,
+    probit_inverse_shift,
+    _jsd_forward_inverse,
+)
 
 
 @njit(fastmath=True)
@@ -20,23 +26,32 @@ def _basic_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
     return 1.0 / scaled_probs
 
 
-@njit(fastmath=True)
 def _wpo_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
-    """Weights proportional to odds method."""
+    """Weights proportional to odds method.
+
+    Exact inverse of the devig WPO map. Devig removes the margin weighted by
+    the *vigged* odds:  π_i = 1/O_i - margin · O_i / Σ O_j.  Fixing T = Σ O_j
+    turns each O_i into a quadratic root, leaving a single scalar equation
+    Σ O_i(T) = T solved for T (method 6). This round-trips exactly with
+    implied_probabilities(..., 'wpo').
+    """
     if margin <= 0:
         return 1.0 / probs
 
-    # Calculate raw odds
-    raw_odds = 1.0 / probs
+    probs_64 = probs.astype(np.float64)
 
-    # Weights proportional to odds
-    weights = raw_odds / np.sum(raw_odds)
+    # T = Σ O_j is bracketed below by the fair-odds sum (margin shrinks every
+    # decimal odd, hence the sum) and above by a small positive value.
+    t_max = np.sum(1.0 / probs_64)
+    params = np.concatenate([probs_64, np.array([margin])])
+    T = solve_root_brent(params, 6, 1e-9, t_max)
 
-    # Add margin based on weights
-    margin_to_add = margin * weights
-    new_probs = probs + margin_to_add
+    if np.isnan(T):
+        return _basic_odds(probs, margin)
 
-    return 1.0 / new_probs
+    k = margin / T
+    odds = (-probs_64 + np.sqrt(probs_64 * probs_64 + 4.0 * k)) / (2.0 * k)
+    return odds
 
 
 @njit(fastmath=True)
@@ -71,9 +86,10 @@ def _shin_odds(
 ) -> np.ndarray:
     """Shin's method for converting probabilities to odds.
 
-    Forward Shin with parameter z ≥ 0:
-        b_i = √π_i / (z + √π_i)
-    Solve z so Σ b_i = 1 + margin, then return 1 / b_i.
+    Forward Shin is the exact algebraic inverse of the devig Shin formula:
+        b_i = √( S · π_i · ( (1-z)·π_i + z ) ),   S = 1 + margin
+    Solve z ∈ [0, 1) so Σ b_i = S, then return 1 / b_i. This round-trips
+    exactly with implied_probabilities(..., 'shin').
     """
     if margin <= 0 and gross_margin <= 0:
         return 1.0 / probs
@@ -82,13 +98,13 @@ def _shin_odds(
 
     # Forward Shin solver (method id 5) — distinct from the devig solver.
     params = np.concatenate([probs_64, np.array([margin])])
-    z = solve_root_brent(params, 5, 0.0, 100.0)
+    z = solve_root_brent(params, 5, 0.0, 1.0 - 1e-9)
 
     if np.isnan(z):
         return _basic_odds(probs, margin)
 
-    sqrt_probs = np.sqrt(probs_64)
-    new_probs = sqrt_probs / (z + sqrt_probs)
+    S = 1.0 + margin
+    new_probs = np.sqrt(S * probs_64 * ((1.0 - z) * probs_64 + z))
 
     if gross_margin > 0:
         new_probs = new_probs * (1.0 + gross_margin) / np.sum(new_probs)
@@ -160,6 +176,73 @@ def _power_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
     return 1.0 / powered_probs
 
 
+def _probit_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
+    """Probit method (odds direction).
+
+    Exact inverse of the devig probit map π_i = Φ(Φ⁻¹(b_i) − c): add a positive
+    shift on the inverse-normal-CDF scale, b_i = Φ(Φ⁻¹(π_i) − c) with c < 0, and
+    solve c so Σ b_i = 1 + margin. Returns 1 / b_i.
+    """
+    if margin <= 0:
+        return 1.0 / probs
+
+    probs_64 = probs.astype(np.float64)
+    z_scores = probit_transform(probs_64)
+    params = np.concatenate([z_scores, np.array([margin])])
+
+    # The devig solver (method 4) computes Σ Φ(z_i - c) - (1 + margin). At c = 0
+    # the sum is Σ π_i = 1 < 1 + margin, and it grows as c decreases, so the
+    # add-vig shift is the negative root c ∈ [-20, 0).
+    c = solve_root_brent(params, 4, -20.0, 0.0)
+
+    if np.isnan(c):
+        return _basic_odds(probs, margin)
+
+    book = probit_inverse_shift(z_scores, c)  # Φ(z_i - c), c < 0 → inflated
+    return 1.0 / book
+
+
+def _jsd_odds(probs: np.ndarray, margin: float = 0.0) -> np.ndarray:
+    """Jensen-Shannon distance method (odds direction).
+
+    Exact inverse of the devig JSD map. Devig finds π_i < b_i at a shared
+    binomial JS distance d; forward inverts upward, finding b_i > π_i at a
+    shared d such that Σ b_i = 1 + margin. Returns 1 / b_i.
+    """
+    if margin <= 0:
+        return 1.0 / probs
+
+    probs_64 = probs.astype(np.float64)
+    params = np.concatenate([probs_64, np.array([margin])])
+
+    # Binomial JS distance is bounded by sqrt(ln 2) ≈ 0.833; bracket d below it.
+    d = solve_root_brent(params, 7, 1e-9, 0.83)
+
+    if np.isnan(d):
+        return _basic_odds(probs, margin)
+
+    book = np.empty_like(probs_64)
+    for i in range(len(probs_64)):
+        book[i] = _jsd_forward_inverse(d, probs_64[i])
+
+    if not np.all(np.isfinite(book)):
+        return _basic_odds(probs, margin)
+
+    # A near-1 favorite can only move a bounded JS distance before hitting the
+    # b = 1 ceiling. When that ceiling binds, no shared-distance book reaches the
+    # requested margin, so the result is not invertible by the devig map — the
+    # (probabilities, margin) pair is outside the range of JSD. Raise rather than
+    # silently return a book that fails to round-trip.
+    if np.any(book >= 1.0 - 1e-7):
+        raise ValueError(
+            "JSD add-vig is infeasible for these probabilities at this margin: "
+            "a near-certain favorite saturates the b=1 bound before the book can "
+            "reach the requested overround. Use a lower margin or another method."
+        )
+
+    return 1.0 / book
+
+
 def implied_odds(
     probabilities: Union[List[float], np.ndarray],
     method: MethodType = Method.BASIC,
@@ -180,7 +263,14 @@ def implied_odds(
         ADDITIVE: Adds margin equally to each probability
         SHIN: Shin's method using square root transformation (handles bias)
         OR: Odds ratio method with logarithmic transformation
-        POWER: Power method (Clarke et al. 2017) - currently τ=1 (equivalent to BASIC)
+        POWER: Power method (Clarke et al. 2017)
+        JSD: Jensen-Shannon distance method
+        PROBIT: Probit (inverse normal CDF) shift method
+
+    Every method is the exact inverse of its implied_probabilities (devig)
+    counterpart and round-trips to numerical precision. JSD is the one partial
+    case: a near-certain favorite can saturate the b=1 bound at high margins,
+    which is mathematically outside the range of JSD-devig and raises ValueError.
 
     The Power method is based on Clarke et al. (2017) "Adjusting Bookmaker's Odds
     to Allow for Overround" and offers theoretical advantages:
@@ -251,6 +341,10 @@ def implied_odds(
         odds = _or_odds(probs_array, margin)
     elif method == Method.POWER:
         odds = _power_odds(probs_array, margin)
+    elif method == Method.JSD:
+        odds = _jsd_odds(probs_array, margin)
+    elif method == Method.PROBIT:
+        odds = _probit_odds(probs_array, margin)
     else:
         raise ValueError(f"Method {method} not supported for odds conversion")
 
